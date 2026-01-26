@@ -23,6 +23,10 @@ Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
 // U8g2 adapter
 U8G2_FOR_ADAFRUIT_GFX u8g2;
 
+// Blinking timing
+unsigned long lastBlinkTime = 0;
+bool circleIsWhite = true;
+
 void drawTestScreen()
 {
    // Kék sáv (középen)
@@ -83,4 +87,16 @@ void setup()
 
 void loop()
 {
+  // the white circle blinks white/purple every second
+  unsigned long currentTime = millis();
+  
+  // Toggle every 1000ms (1 second)
+  if (currentTime - lastBlinkTime >= 1000) {
+    circleIsWhite = !circleIsWhite;
+    lastBlinkTime = currentTime;
+    
+    // Redraw only the circle
+    uint16_t circleColor = circleIsWhite ? ST77XX_WHITE : ST77XX_MAGENTA;
+    tft.fillCircle(50, 140, 20, circleColor);
+  }
 }
