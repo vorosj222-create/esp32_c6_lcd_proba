@@ -35,13 +35,23 @@ void drawTestScreen()
   //u8g2.setFont(u8g2_font_inb46_mf); // U8g2 font
   u8g2.setFont(u8g2_font_fub35_tf);
   // Kiírás U8g2 fonttal
-  u8g2.setCursor(14, 80);
+  u8g2.setCursor(14, 50);
   u8g2.print("Hello world!");
 
-  tft.setCursor(16, 110);
+  tft.setCursor(16, 70);
   tft.setTextColor(ST77XX_WHITE);
   tft.setTextSize(4);
   tft.print("Hello world!");
+
+  // draw the following objects to the bottom of the screen:
+  // white filled circle (diameter 40px)
+  tft.fillCircle(50, 140, 20, ST77XX_WHITE);
+  
+  // red filled triangle (40px height)
+  tft.fillTriangle(160, 120, 200, 160, 120, 160, ST77XX_RED);
+  
+  // green rectangle (40x40)
+  tft.fillRect(240, 120, 40, 40, ST77XX_GREEN);
 }
 
 void setup()
