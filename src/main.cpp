@@ -1,102 +1,161 @@
-#include <Adafruit_GFX.h>
-#include <Adafruit_ST7789.h>
-#include <SPI.h>
-#include <U8g2_for_Adafruit_GFX.h>
+#include <Arduino.h>
+#define LGFX_USE_V1
+#include <LovyanGFX.hpp>
 
-// GPIO pinout
-#define TFT_MOSI 6
-#define TFT_SCLK 7
-#define TFT_CS 14
-#define TFT_DC 15
-#define TFT_RST 21
-#define TFT_BL 22 // background illumination
+// Beemeljük a háttérképet tartalmazó fájlt
+#include "meter_background.h"
 
-// Display
-#define LCD_W 320
-#define LCD_H 172
-#define OFFSET_X 0
-#define OFFSET_Y 34
+class LGFX_ESP32_C6 : public lgfx::LGFX_Device {
+  lgfx::Panel_ST7789  _panel_instance;
+  lgfx::Bus_SPI       _bus_instance;
 
-// Display object
-Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
+public:
+  LGFX_ESP32_C6() {
+    { // SPI busz beállítása
+      auto cfg = _bus_instance.config();
+      cfg.spi_host = SPI2_HOST;
+      cfg.spi_mode = 0;
+      cfg.freq_write = 40000000;
+      cfg.pin_sclk = 7;
+      cfg.pin_mosi = 6;
+      cfg.pin_miso = -1;
+      cfg.pin_dc   = 15;
+      _bus_instance.config(cfg);
+      _panel_instance.setBus(&_bus_instance);
+    }
 
-// U8g2 adapter
-U8G2_FOR_ADAFRUIT_GFX u8g2;
+    { // Kijelző panel beállítása
+      auto cfg = _panel_instance.config();
+      cfg.pin_cs           = 14;    
+      cfg.pin_rst          = 21;    
+      cfg.pin_busy         = -1;
+      cfg.panel_width      = 172;   
+      cfg.panel_height     = 320;   
+      cfg.offset_x         = 34;    // A bevált, pixelpontos vízszintes offset
+      cfg.offset_y         = 0;     
+      cfg.offset_rotation  = 0;     
+      cfg.dummy_read_pixel = 8;
+      cfg.readable         = false;
+      cfg.invert           = true;  
+      cfg.rgb_order        = false; 
+      _panel_instance.config(cfg);
+    }
+    setPanel(&_panel_instance);
+  }
+};
 
-// Blinking timing
-unsigned long lastBlinkTime = 0;
-bool circleIsWhite = true;
+LGFX_ESP32_C6 tft;
 
-void drawTestScreen()
-{
-   // Kék sáv (középen)
-  tft.fillRect(0, 0, 320, 172, ST77XX_BLUE);
+// A rajzlap (Sprite) a VU meter területéhez
+LGFX_Sprite canvas(&tft);
 
-  u8g2.setForegroundColor(ST77XX_WHITE); // wrapper color
-  u8g2.setBackgroundColor(ST77XX_BLUE);  
+#define TFT_BL 22 
 
-  // Példa font beállítása https://github.com/olikraus/u8g2/wiki/fntlist99
-  //u8g2.setFont(u8g2_font_inb46_mf); // U8g2 font
-  u8g2.setFont(u8g2_font_fub35_tf);
-  // Kiírás U8g2 fonttal
-  u8g2.setCursor(14, 50);
-  u8g2.print("Hello world!");
+// VU Meter geometriai állandók - FINOMÍTVA ÉS PONTOSÍTVA
+const int METER_W = 172;
+const int METER_H = 172;
+const int CENTER_X = 86;    // Kijelző közepe vízszintesen
+const int CENTER_Y = 120;   // A pontosított forgástengely magassága
+const int NEEDLE_LEN = 84;  // A mutató teljes hossza a forgásponttól mérve
 
-  tft.setCursor(16, 70);
-  tft.setTextColor(ST77XX_WHITE);
-  tft.setTextSize(4);
-  tft.print("Hello world!");
+// Szöghatárok fokban mérve
+const float MIN_ANGLE = 232.0; // Csönd / -20 dB
+const float MAX_ANGLE = 308.0; // Csúcs / +5 dB
 
-  // draw the following objects to the bottom of the screen:
-  // white filled circle (diameter 40px)
-  tft.fillCircle(50, 140, 20, ST77XX_WHITE);
+// Fizika és időzítés változói a finom mozgáshoz
+float currentAngle = MIN_ANGLE;
+float targetAngle = MIN_ANGLE;
+unsigned long lastUpdateTime = 0;
+
+// A VU meter dinamikus frissítése a háttér-pufferben (Dupla pufferelés)
+void updateVUMeter() {
+  // 1. Visszamásoljuk a tiszta, Nano Bananával retusált háttérképet a Flash-ből
+  canvas.pushImage(0, 0, METER_W, METER_H, (const uint16_t*)vu_172x172_map);
   
-  // red filled triangle (40px height)
-  tft.fillTriangle(160, 120, 200, 160, 120, 160, ST77XX_RED);
+  // Átváltjuk a szöget radiánba a trigonometriához
+  float radians = currentAngle * DEG_TO_RAD;
+  float cosRad = cos(radians);
+  float sinRad = sin(radians);
+
+  // 2. Kiszámoljuk a mutató belső KEZDŐPONTJÁT (a forgáspont felé eső egyharmadot kihagyjuk)
+  int startLen = NEEDLE_LEN / 3; // Az első ~28 pixel láthatatlan marad
+  int startX = CENTER_X + (int)(cosRad * startLen);
+  int startY = CENTER_Y + (int)(sinRad * startLen);
+
+  // 3. Kiszámoljuk a mutató külső VÉGPONTJÁT (a teljes hossznál)
+  int endX = CENTER_X + (int)(cosRad * NEEDLE_LEN);
+  int endY = CENTER_Y + (int)(sinRad * NEEDLE_LEN);
   
-  // green rectangle (40x40)
-  tft.fillRect(240, 120, 40, 40, ST77XX_GREEN);
+  // 4. Megrajzoljuk a lebegő fekete mutatót (2 pixel vastagon, körök nélkül)
+  canvas.drawLine(startX, startY, endX, endY, TFT_BLACK);
+  canvas.drawLine(startX + 1, startY, endX + 1, endY, TFT_BLACK);
+  
+  // 5. A kész kompozíciót (számlap + lebegő mutató) kitoljuk a kijelző tetejére
+  canvas.pushSprite(0, 0);
 }
 
-void setup()
-{
+// Az alsó rész statikus feliratainak egyszeri kirajzolása
+void drawStaticInterface() {
+  tft.fillRect(0, METER_H + 1, 172, 320 - (METER_H + 1), TFT_BLACK); // Alsó rész tisztítása
+  
+  tft.drawFastHLine(0, METER_H, 172, TFT_GREEN); // Zöld elválasztó vonal
+  
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.setTextSize(1);
+  tft.setCursor(10, 190);
+  tft.print("INPUT: CH1 (I2S)");
+  
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.setCursor(10, 280);
+  tft.print("SPRITE DMA ACTIVE");
+}
+
+void setup() {
   Serial.begin(115200);
 
-  // Background illumination ON
+  // Háttérvilágítás bekapcsolása
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
 
-  // SPI init (SCLK, MISO (-1), MOSI, CS)
-  SPI.begin(TFT_SCLK, -1, TFT_MOSI, TFT_CS);
+  tft.init();
+  tft.setRotation(0); // Álló tájolás (Portrait)
+  tft.fillScreen(TFT_BLACK); 
 
-  // ST7789 init
-  // Init(width, height) then turning, offset
-  tft.init(LCD_H, LCD_W); // replace, because swap_xy = true volt
+  // Létrehozzuk a Sprite-ot a memóriában
+  canvas.createSprite(METER_W, METER_H);
+  canvas.setSwapBytes(true); // Biztosítja a megfelelő bájtsorrendet
 
-  // Color invert and rotation
-  tft.invertDisplay(true);
-  tft.setRotation(1); // landscape
-
-  u8g2.begin(tft);
-
-  tft.fillScreen(ST77XX_BLACK);
-
-  // Test
-  drawTestScreen();
+  // Alsó feliratok kirajzolása
+  drawStaticInterface();
 }
 
-void loop()
-{
-  // the white circle blinks white/purple every second
+void loop() {
   unsigned long currentTime = millis();
   
-  // Toggle every 1000ms (1 second)
-  if (currentTime - lastBlinkTime >= 1000) {
-    circleIsWhite = !circleIsWhite;
-    lastBlinkTime = currentTime;
-    
-    // Redraw only the circle
-    uint16_t circleColor = circleIsWhite ? ST77XX_WHITE : ST77XX_MAGENTA;
-    tft.fillCircle(50, 140, 20, circleColor);
+  // 20ms = 50 FPS képfrissítés a tükörsima animációhoz
+  if (currentTime - lastUpdateTime >= 20) {
+    lastUpdateTime = currentTime;
+
+    // Szimulált zenei ugrálás: véletlenszerűen új célértéket választunk
+    if (random(100) < 8) {
+      targetAngle = random(MIN_ANGLE, MAX_ANGLE + 4); 
+    }
+
+    // Finom tehetetlenség/csillapítás (Ease physics): a mutató követi a célértéket
+    // Felfelé dinamikusan ránt, lefelé finomabban esik vissza
+    if (targetAngle > currentAngle) {
+      currentAngle += (targetAngle - currentAngle) * 0.25;
+    } else {
+      currentAngle += (targetAngle - currentAngle) * 0.12;
+    }
+
+    // VU meter renderelése a kijelzőre
+    updateVUMeter();
+
+    // Élő érték kiírása dB-ben az alsó szekcióba
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(1);
+    tft.setCursor(10, 215);
+    tft.printf("VALUE: %02d dB ", (int)map(currentAngle, MIN_ANGLE, MAX_ANGLE, -20, 5));
   }
 }
