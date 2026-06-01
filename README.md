@@ -7,3 +7,4 @@ Important: needs PioArduino, ckeck the .ini file.
 Platformio uses an old Espressif version, without support for the new chips, like the C6.
 
 u8g2 font "Hello world!", Adafruit font "Hello world!", some graphics
+Last commit: LovyanGfx upgrade, VU meter animation
